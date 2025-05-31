@@ -1,3 +1,4 @@
+import AppConfig
 import ArgumentParser
 import ContainerBuilder
 import ContainerRegistry
@@ -94,6 +95,9 @@ struct RunCommand: AsyncParsableCommand, Sendable {
         let package = try await swiftPM.dumpPackage(
             .scratchPath(".edge-build")
         )
+
+        let appConfigData = try Data(contentsOf: URL(fileURLWithPath: ".edge/app.json"))
+        let appConfig = try JSONDecoder().decode(AppConfig.self, from: appConfigData)
 
         // Get all executable targets
         let executableTargets = package.targets.filter { $0.type == "executable" }
@@ -241,6 +245,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                     } else {
                         $0.cmd = "/bin/\(imageName)"
                     }
+                    $0.appConfig = appConfigData
+                    $0.autoRestart = !debug
                     $0.layers = container.layers.map { layer in
                         .with {
                             $0.digest = layer.digest
@@ -252,10 +258,8 @@ struct RunCommand: AsyncParsableCommand, Sendable {
                 }
             )
 
-            if response.debugPort != 0 {
-                logger.info(
-                    "Started container with debug port \(response.debugPort)"
-                )
+            if debug {
+                logger.info("Started container with debug port 4242")
             } else {
                 logger.info("Started container")
             }
