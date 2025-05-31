@@ -14,6 +14,7 @@ struct Release: Decodable {
     }
     let prerelease: Bool
     let assets: [Asset]
+    let name: String
 }
 
 enum ReleasesError: Error {
