@@ -30,7 +30,7 @@ struct AgentCommand: AsyncParsableCommand {
         var checkUpdates: Bool = false
 
         @Flag(help: "Check for pre-releases")
-        var prereleases: Bool = false
+        var prerelease: Bool = false
 
         struct JSONOutput: Codable {
             let currentVersion: String
@@ -49,7 +49,7 @@ struct AgentCommand: AsyncParsableCommand {
 
             if checkUpdates {
                 let releases = try await fetchReleases()
-                if prereleases {
+                if prerelease {
                     latestVersion = releases.first?.name
                 } else {
                     latestVersion = releases.first(where: { $0.prerelease == false })?.name
