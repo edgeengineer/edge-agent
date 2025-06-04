@@ -1,3 +1,4 @@
+import AppConfig
 import ContainerRegistry
 import ContainerdGRPC
 import EdgeAgentGRPC
@@ -114,77 +115,70 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                     )
                 }
 
-                // TODO: Replace with a _real_ JSON API like Codable
-                let spec = try JSONSerialization.data(withJSONObject: [
-                    "ociVersion": "1.0.3",
-                    "process": [
-                        "terminal": false,
-                        "user": ["uid": 0, "gid": 0],
-                        "args": request.cmd.split(separator: " ").map(String.init),
-                        "env": [
+                let appConfig = try JSONDecoder().decode(AppConfig.self, from: request.appConfig)
+
+                var spec = OCI(
+                    process: .init(
+                        user: .root,
+                        args: request.cmd.split(separator: " ").map(String.init),
+                        env: [
                             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                         ],
-                        "cwd": "/",
-                    ],
-                    "root": [
-                        "path": "rootfs",
-                        "readonly": false,
-                    ],
-                    "hostname": request.appName,
-                    "mounts": [
-                        [
-                            "destination": "/proc",
-                            "type": "proc",
-                            "source": "proc",
-                        ],
-                        [
-                            "destination": "/dev",
-                            "type": "tmpfs",
-                            "source": "tmpfs",
-                            "options": ["nosuid", "strictatime", "mode=755", "size=65536k"],
-                        ],
-                        [
-                            "destination": "/dev/pts",
-                            "type": "devpts",
-                            "source": "devpts",
-                            "options": [
+                        cwd: "/"
+                    ),
+                    root: .init(path: "rootfs", readonly: false),
+                    hostname: request.appName,
+                    mounts: [
+                        .init(destination: "/proc", type: "proc", source: "proc"),
+                        // Needed for TTY support (requirement for DS2)
+                        .init(
+                            destination: "/dev/pts",
+                            type: "devpts",
+                            source: "devpts",
+                            options: [
                                 "nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620",
-                            ],
-                        ],
-                        [
-                            "destination": "/dev/shm",
-                            "type": "tmpfs",
-                            "source": "shm",
-                            "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"],
-                        ],
-                        [
-                            "destination": "/dev/mqueue",
-                            "type": "mqueue",
-                            "source": "mqueue",
-                            "options": ["nosuid", "noexec", "nodev"],
-                        ],
+                            ]
+                        ),
+                        .init(
+                            destination: "/dev/shm",
+                            type: "tmpfs",
+                            source: "shm",
+                            options: ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
+                        ),
+                        .init(
+                            destination: "/dev/mqueue",
+                            type: "mqueue",
+                            source: "mqueue",
+                            options: ["nosuid", "noexec", "nodev"]
+                        ),
                     ],
-                    "linux": [
-                        "namespaces": [
-                            ["type": "pid"],
-                            ["type": "ipc"],
-                            ["type": "uts"],
-                            ["type": "mount"],
+                    linux: .init(
+                        namespaces: [
+                            .init(type: "pid"),
+                            .init(type: "ipc"),
+                            .init(type: "uts"),
+                            .init(type: "mount"),
                         ],
-                        "networkMode": "host",
-                        "capabilities": [
-                            "bounding": ["SYS_PTRACE"],
-                            "effective": ["SYS_PTRACE"],
-                            "inheritable": ["SYS_PTRACE"],
-                            "permitted": ["SYS_PTRACE"],
-                        ],
-                        "seccomp": [
-                            "defaultAction": "SCMP_ACT_ALLOW",
-                            "architectures": ["SCMP_ARCH_AARCH64"],
-                            "syscalls": [],
-                        ],
-                    ],
-                ])
+                        networkMode: "host",
+                        capabilities: .init(
+                            bounding: ["SYS_PTRACE"],
+                            effective: ["SYS_PTRACE"],
+                            inheritable: ["SYS_PTRACE"],
+                            permitted: ["SYS_PTRACE"],
+                        ),
+                        seccomp: Seccomp(
+                            defaultAction: "SCMP_ACT_ALLOW",
+                            architectures: ["SCMP_ARCH_AARCH64"],
+                            syscalls: []
+                        ),
+                        devices: []
+                    )
+                )
+
+                spec.applyEntitlements(
+                    entitlements: appConfig.entitlements,
+                    appName: request.appName
+                )
 
                 let snapshotKey: String?
                 let mounts: [Containerd_Types_Mount]
@@ -211,7 +205,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         imageName: request.imageName,
                         appName: request.appName,
                         snapshotKey: snapshotKey ?? "",
-                        ociSpec: spec
+                        ociSpec: try JSONEncoder().encode(spec)
                     )
                 } catch let error as RPCError where error.code == .alreadyExists {
                     logger.debug("Container already exists, updating container")
@@ -219,7 +213,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                         imageName: request.imageName,
                         appName: request.appName,
                         snapshotKey: snapshotKey ?? "",
-                        ociSpec: spec
+                        ociSpec: try JSONEncoder().encode(spec)
                     )
                 }
 
@@ -294,9 +288,7 @@ struct EdgeContainerService: Edge_Agent_Services_V1_EdgeContainerService.Service
                 try await client.runTask(containerID: request.appName)
 
                 return ServerResponse(
-                    message: .with {
-                        $0.debugPort = 4242
-                    }
+                    message: .init()
                 )
             } catch let error as RPCError {
                 logger.error(
