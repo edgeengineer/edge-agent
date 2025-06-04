@@ -44,6 +44,7 @@ let package = Package(
                 .target(name: "Imager"),
                 .target(name: "ContainerRegistry"),
                 .target(name: "DownloadSupport"),
+                .target(name: "AppConfig"),
             ],
             resources: [
                 .copy("Resources")
@@ -89,6 +90,7 @@ let package = Package(
                 .target(name: "ContainerRegistry"),
                 .target(name: "Shell"),
                 .target(name: "EdgeShared"),
+                .target(name: "AppConfig"),
             ]
         ),
 
@@ -105,7 +107,6 @@ let package = Package(
             name: "EdgeShared",
             dependencies: []
         ),
-
         .target(
             name: "EdgeAgentGRPC",
             dependencies: [
@@ -146,6 +147,9 @@ let package = Package(
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "_NIOFileSystem", package: "swift-nio"),
             ]
+        ),
+        .target(
+            name: "AppConfig"
         ),
         .target(
             name: "Shell",
