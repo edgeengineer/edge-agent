@@ -279,6 +279,10 @@ wendy vm stop dev      # power it off
 wendy vm rm dev        # delete a VM and its disk
 ```
 
+The VM name is optional for `start`, `stop`, `logs`, and `rm` in an interactive
+terminal. Leave it out to choose a VM from a list; scripts should continue to
+pass the name explicitly.
+
 A backgrounded VM outlives the command that started it, so closing the terminal
 or pressing Ctrl-C does not power it off. `wendy vm rm` refuses to delete a
 running VM unless you pass `--force`.
