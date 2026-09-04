@@ -139,6 +139,9 @@ func waitForSimulatorReady(ctx context.Context, name, addr string, budget time.D
 			return err
 		}
 		if _, resp, err := getAgentVersionAtAddress(ctx, addr); err == nil && resp != nil {
+			// The guest just told us its name; remembered so its stray mDNS
+			// announcement is recognised as this VM from now on. Best-effort.
+			_ = vmRecordHostnameFn(name, resp.GetHostname())
 			return nil
 		}
 		// Under emulation the budget is five minutes. Without this, a guest that
