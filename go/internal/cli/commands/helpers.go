@@ -1115,7 +1115,30 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		return conn, nil
 	}
 
+	// Rewrite a simulator alias before resolveDeviceAddress reads the flag: this
+	// path dials straight from it and never passes through resolveTargetInner's
+	// hook, so without this `--device sim` reaches only the commands that go via
+	// resolveTarget. After the socket and cloud branches, so neither is
+	// pre-empted by starting a VM.
+	aliasedVM := false
+	if deviceFlag != "" {
+		aliasAddr, matched, aliasErr := resolveVMAlias(ctx, deviceFlag)
+		if aliasErr != nil {
+			return nil, aliasErr
+		}
+		if matched {
+			deviceFlag, aliasedVM = aliasAddr, true
+		}
+	}
+
 	addr, pinKey, isDefault, err := resolveDeviceAddress()
+	if aliasedVM {
+		// A VM is identified by its name, not by the loopback address it was
+		// just resolved to -- which every other VM shares. Unpinned, like the
+		// cloud path. Only addresses the CLI itself derived from a VM alias are
+		// exempt; one the user typed is pinned as it has always been.
+		pinKey = ""
+	}
 	if err == nil {
 		// The name the user asked for, used both to talk about this device and
 		// to decide which device is acceptable — see resolveDeviceAddress.
@@ -2368,7 +2391,7 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 				}
 			}
 			conn.Close()
-			certRejected := isCertRejectionError(probeErr)
+			certRejected := isCertRejectionError(cand, probeErr)
 			if certRejected {
 				w.anyCertRejection = true
 			}
@@ -2532,11 +2555,22 @@ func rotateCertsForOrg(certs []config.CertificateInfo, orgID int32) []config.Cer
 // Matches "remote error: tls:" (server sent an alert) and other cert-specific
 // signals; deliberately excludes "tls: first record does not look like a TLS
 // handshake" (plaintext server probed with TLS) and plain transport errors.
-func isCertRejectionError(err error) bool {
+// addr is the endpoint the probe was aimed at: over loopback the verdict has
+// one extra exclusion, described below.
+func isCertRejectionError(addr string, err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
+	// A handshake ending in EOF got no TLS alert back, so nothing rejected
+	// anything: something accepted the connection and closed it. A port forward
+	// does exactly that when the far side is not listening -- QEMU's user-mode
+	// networking accepts on the host and only then finds the guest port closed.
+	// Only over loopback: elsewhere an EOF may be an on-path reset, and reading
+	// that as "not a TLS endpoint" would re-offer the plaintext rung.
+	if isLoopbackHost(addr) && strings.Contains(msg, "handshake failed: EOF") {
+		return false
+	}
 	// A plaintext (unprovisioned) agent probed with TLS reports "first record
 	// does not look like a TLS handshake", which gRPC wraps inside its
 	// "authentication handshake failed" envelope. That is NOT a cert rejection —
@@ -2726,7 +2760,12 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 	arch := resp.GetCpuArchitecture()
 	osName := resp.GetOs()
-	addr := hostPort(conn.Host, defaultAgentPort)
+	// conn.Addr, not conn.Host: the host alone loses the port, and a VM reached
+	// on a forwarded 50053 would come back on 50051 -- a different VM.
+	addr := conn.Addr
+	if addr == "" {
+		addr = hostPort(conn.Host, defaultAgentPort)
+	}
 
 	if err := performAgentUpdate(ctx, conn, osName, arch, false); err != nil {
 		fmt.Fprintf(os.Stderr, "Update failed: %v\nContinuing with existing connection.\n", err)
@@ -3121,6 +3160,19 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 	}
 
 	rt := phaseTimer()
+
+	// Rewrite a simulator alias to the address its agent is forwarded to,
+	// starting the VM if needed. Before the provider sweep, so no other target
+	// pays for it.
+	if device != "" {
+		addr, matched, err := resolveVMAlias(ctx, device)
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			device = addr
+		}
+	}
 
 	// Check if the device flag matches a known provider key.
 	if device != "" {
@@ -3870,16 +3922,29 @@ func pickDeviceWithCloudAuth(ctx context.Context, excludeProviders map[string]bo
 	if dm.cancelled {
 		return nil, ErrUserCancelled
 	}
-	if asset := dm.selectedCloud(); asset != nil {
-		cliLogln("Connecting to %s via cloud tunnel...", asset.GetName())
-		conn, err := connectCloudAsset(ctx, cloudAuth, asset, dm.cloud.brokerURL)
+	choice, ok := dm.choice()
+	if !ok {
+		return nil, fmt.Errorf("no device selected")
+	}
+	switch choice.Tab {
+	case devicePickerCloudTab:
+		cliLogln("Connecting to %s via cloud tunnel...", choice.Cloud.GetName())
+		conn, err := connectCloudAsset(ctx, cloudAuth, choice.Cloud, dm.cloud.brokerURL)
 		if err != nil {
 			return nil, err
 		}
 		return &SelectedDevice{Agent: conn}, nil
+	case devicePickerSimulatorTab:
+		return connectSimulatorChoice(ctx, choice.Simulator, suppressUpdateCheck)
+	default:
+		return connectLocalPickerChoice(ctx, choice.Local, suppressUpdateCheck)
 	}
+}
 
-	sel := dm.selectedLocal()
+// connectLocalPickerChoice turns a Local-tab selection into a connection. Lifted
+// verbatim out of pickDeviceWithCloudAuth so the three-way dispatch above stays
+// readable on one screen.
+func connectLocalPickerChoice(ctx context.Context, sel *tui.PickerItem, suppressUpdateCheck bool) (*SelectedDevice, error) {
 	if sel == nil {
 		return nil, fmt.Errorf("no device selected")
 	}
